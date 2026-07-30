@@ -159,9 +159,9 @@
 
       BOOST_CHANCE: 0.05,              // 加速觸發機率 (0.07 = 7%)
       BOOSTED_BOUNCES: 1,              // 每次啟動後加速幾次彈跳
-      BOOST_MULTIPLIER: 2,           // 加速彈跳倍率
+      BOOST_MULTIPLIER: 2,             // 加速彈跳倍率
       MAX_SPEED: 1050,                 // 速度安全上限
-      MIN_SPEED: 270,                  // 速度安全下限，防止球靜止 (px/s)
+      MIN_SPEED: 300,                  // 速度安全下限，防止球靜止 (px/s)
       
       RING_SHRINK_SPEED: 5,            // 圓框內縮速度 (px/s)
       RING_MIN_RADIUS: 12,             // 圓框最小半徑 (需大於球體，以免破圖)
@@ -215,6 +215,8 @@
       BALL_BOOST_SMOKE_COUNT: 30,      // 噴煙數量
       BALL_BOOST_SMOKE_SPEED: 310,     // 噴射的扇形速度
       BALL_BOOST_SMOKE_SPREAD: 1.5,    // 散佈角度 (弧度)
+
+      TARGET_FPS: 60, // 目標幀率
     };  
 
 
@@ -330,7 +332,7 @@
       const previousCenter = center;
       const relativeBallX = ball ? ball.x - previousCenter.x : 0;
       const relativeBallY = ball ? ball.y - previousCenter.y : 0;
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      dpr = 1; // 強制使用標準解析度，大幅降低 GPU 填色負擔
       width = window.innerWidth;
       height = window.innerHeight;
       canvas.width = Math.round(width * dpr);
@@ -412,6 +414,8 @@
         boostSmokeAccumulator: 0, 
         boostDirX: 0,             
         boostDirY: 0,
+        lowSpeedBounces: 0, // ★ 追蹤連續低速次數
+        targetLowSpeedBounces: Math.floor(Math.random() * 4) + 2, // ★ 新增：初始化隨機目標次數 (2~5)
       };
       ripples = [];
       particles = [];
@@ -649,16 +653,26 @@
         });
       }
 
+      // ★ 修改：連續低速隨機 2~5 次才觸發速度下限輔助推力
       const postBounceSpeed = Math.hypot(ball.vx, ball.vy);
       if (postBounceSpeed < CONFIG.MIN_SPEED) {
-        if (postBounceSpeed < 0.1) {
-          ball.vx = -normalX * CONFIG.MIN_SPEED;
-          ball.vy = -normalY * CONFIG.MIN_SPEED;
-        } else {
-          const scale = CONFIG.MIN_SPEED / postBounceSpeed;
-          ball.vx *= scale;
-          ball.vy *= scale;
+        ball.lowSpeedBounces += 1; // 記錄低速次數
+        if (ball.lowSpeedBounces >= ball.targetLowSpeedBounces) {
+          // 達到隨機低速次數：強制提速並歸零計數器
+          if (postBounceSpeed < 0.1) {
+            ball.vx = -normalX * CONFIG.MIN_SPEED;
+            ball.vy = -normalY * CONFIG.MIN_SPEED;
+          } else {
+            const scale = CONFIG.MIN_SPEED / postBounceSpeed;
+            ball.vx *= scale;
+            ball.vy *= scale;
+          }
+          ball.lowSpeedBounces = 0; // 提速後重置
+          ball.targetLowSpeedBounces = Math.floor(Math.random() * 2) + 1; // 重新骰下一次的目標次數
         }
+      } else {
+        ball.lowSpeedBounces = 0; // 若速度本身足夠，則重置計數
+        ball.targetLowSpeedBounces = Math.floor(Math.random() * 2) + 1; // 重置目標次數
       }
     }
 
@@ -1227,12 +1241,29 @@
       drawBall();
     }
 
+    const FRAME_DELAY = 1000 / CONFIG.TARGET_FPS;
+    let lastRenderTime = 0;
+
     function frame(now) {
-      const elapsed = Math.min((now - lastTime) / 1000, 0.034);
+      // 1. 先呼叫下一次的 requestAnimationFrame
+      requestAnimationFrame(frame);
+      
+      // 2. 計算距離上次渲染經過了多久
+      const timeSinceLastRender = now - lastRenderTime;
+      
+      // 3. 如果時間還沒到設定的延遲時間，就跳過這次渲染 (降幀核心)
+      if (timeSinceLastRender < FRAME_DELAY - 1.5) return;
+      
+      // 校正時間偏差，確保動畫平滑
+      lastRenderTime = now - (timeSinceLastRender % FRAME_DELAY);
+
+      // 4. 原本的物理更新與渲染邏輯
+      // 將時間差轉換為秒，並限制最大值避免切換視窗時物理運算暴走
+      const elapsed = Math.min((now - lastTime) / 1000, 0.05); 
       lastTime = now;
+      
       if (!paused) update(elapsed);
       render();
-      requestAnimationFrame(frame);
     }
 
     canvas.addEventListener("pointerdown", (event) => {
